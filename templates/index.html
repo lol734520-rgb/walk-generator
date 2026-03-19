@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>WALKGEN</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Bebas+Neue&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #070d05;
+      --panel:    rgba(7, 13, 5, 0.94);
+      --green:    #39ff14;
+      --green-dim:#1a7a08;
+      --amber:    #ffaa00;
+      --red:      #ff3a3a;
+      --border:   rgba(57, 255, 20, 0.18);
+      --text:     #7fb86a;
+      --mono:     'Share Tech Mono', monospace;
+      --display:  'Bebas Neue', sans-serif;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--mono);
+      overflow: hidden;
+    }
+
+    /* ── MAP ── */
+    #map {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+    }
+
+    /* dark tile filter */
+    .leaflet-tile-pane { filter: brightness(0.55) saturate(0.4) hue-rotate(80deg); }
+
+    /* ── HEADER BAR ── */
+    #header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+    }
+
+    #header h1 {
+      font-family: var(--display);
+      font-size: 28px;
+      letter-spacing: 6px;
+      color: var(--green);
+      text-shadow: 0 0 14px var(--green);
+      line-height: 1;
+    }
+
+    #header h1 span { color: var(--amber); }
+
+    #coords-display {
+      font-size: 10px;
+      color: var(--amber);
+      text-align: right;
+      line-height: 1.6;
+      min-width: 130px;
+    }
+
+    /* ── BOTTOM PANEL ── */
+    #panel {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      z-index: 10;
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      backdrop-filter: blur(16px);
+      padding: 16px 16px 24px;
+      transition: transform 0.3s ease;
+    }
+
+    #panel::before {
+      content: '';
+      display: block;
+      width: 40px; height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      margin: 0 auto 14px;
+    }
+
+    /* scan-line overlay */
+    #panel::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 3px,
+        rgba(57, 255, 20, 0.015) 3px,
+        rgba(57, 255, 20, 0.015) 4px
+      );
+      pointer-events: none;
+    }
+
+    .panel-label {
+      font-size: 10px;
+      letter-spacing: 3px;
+      color: var(--green-dim);
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    /* Duration selector */
+    #duration-wrap {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .dur-btn {
+      flex: 1;
+      padding: 10px 4px;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.15s;
+      border-radius: 2px;
+    }
+
+    .dur-btn:hover { border-color: var(--green); color: var(--green); }
+
+    .dur-btn.active {
+      background: var(--green);
+      border-color: var(--green);
+      color: var(--bg);
+      font-weight: bold;
+      box-shadow: 0 0 12px rgba(57,255,20,0.4);
+    }
+
+    /* Generate button */
+    #gen-btn {
+      width: 100%;
+      padding: 15px;
+      background: transparent;
+      border: 2px solid var(--green);
+      color: var(--green);
+      font-family: var(--display);
+      font-size: 22px;
+      letter-spacing: 6px;
+      cursor: pointer;
+      border-radius: 2px;
+      transition: all 0.2s;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #gen-btn::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: var(--green);
+      transform: scaleX(0);
+      transform-origin: left;
+      transition: transform 0.2s ease;
+      z-index: -1;
+    }
+
+    #gen-btn:hover::before, #gen-btn:active::before { transform: scaleX(1); }
+    #gen-btn:hover, #gen-btn:active { color: var(--bg); box-shadow: 0 0 20px rgba(57,255,20,0.5); }
+    #gen-btn:disabled { border-color: var(--green-dim); color: var(--green-dim); cursor: not-allowed; }
+    #gen-btn:disabled::before { display: none; }
+
+    /* ── ROUTE INFO CARD ── */
+    #route-info {
+      display: none;
+      margin-bottom: 14px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 2px;
+      background: rgba(57, 255, 20, 0.04);
+    }
+
+    #route-info.visible { display: block; }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+
+    .info-cell { text-align: center; }
+
+    .info-val {
+      font-size: 22px;
+      color: var(--amber);
+      display: block;
+      font-family: var(--display);
+      letter-spacing: 2px;
+    }
+
+    .info-label {
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: var(--green-dim);
+      text-transform: uppercase;
+    }
+
+    /* ── STATUS LINE ── */
+    #status {
+      font-size: 10px;
+      letter-spacing: 1px;
+      color: var(--green-dim);
+      margin-bottom: 10px;
+      min-height: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #status.error { color: var(--red); }
+    #status.ok    { color: var(--green); }
+
+    /* ── LOCATE BUTTON ── */
+    #locate-btn {
+      position: fixed;
+      right: 14px;
+      bottom: 220px;
+      z-index: 10;
+      width: 44px; height: 44px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 2px;
+      color: var(--green);
+      font-size: 20px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(12px);
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    #locate-btn:hover {
+      border-color: var(--green);
+      box-shadow: 0 0 10px rgba(57,255,20,0.3);
+    }
+
+    /* ── LOADING SPINNER ── */
+    .spinner {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border: 2px solid var(--green-dim);
+      border-top-color: var(--green);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── LEAFLET CUSTOM MARKERS ── */
+    .user-dot {
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 4px rgba(57,255,20,0.2), 0 0 16px rgba(57,255,20,0.6);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 4px rgba(57,255,20,0.2), 0 0 16px rgba(57,255,20,0.6); }
+      50%       { box-shadow: 0 0 0 8px rgba(57,255,20,0.05), 0 0 24px rgba(57,255,20,0.8); }
+    }
+
+    .wp-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--amber);
+      border: 2px solid var(--bg);
+      box-shadow: 0 0 8px rgba(255,170,0,0.5);
+    }
+
+    /* Leaflet overrides */
+    .leaflet-control-attribution { display: none; }
+    .leaflet-control-zoom a {
+      background: var(--panel) !important;
+      border-color: var(--border) !important;
+      color: var(--green) !important;
+      font-family: var(--mono) !important;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- MAP -->
+  <div id="map"></div>
+
+  <!-- HEADER -->
+  <div id="header">
+    <h1>WALK<span>//</span>GEN</h1>
+    <div id="coords-display">
+      LAT —<br>LON —
+    </div>
+  </div>
+
+  <!-- LOCATE BUTTON -->
+  <button id="locate-btn" title="Моя позиция">⊕</button>
+
+  <!-- BOTTOM PANEL -->
+  <div id="panel">
+    <!-- route stats (shown after generation) -->
+    <div id="route-info">
+      <div class="info-grid">
+        <div class="info-cell">
+          <span class="info-val" id="info-dist">—</span>
+          <span class="info-label">км</span>
+        </div>
+        <div class="info-cell">
+          <span class="info-val" id="info-time">—</span>
+          <span class="info-label">минут</span>
+        </div>
+        <div class="info-cell">
+          <span class="info-val" id="info-pts">—</span>
+          <span class="info-label">точек</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="status">// ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ...</div>
+
+    <div class="panel-label">// ДЛИТЕЛЬНОСТЬ ПРОГУЛКИ</div>
+    <div id="duration-wrap">
+      <button class="dur-btn" data-min="15">15м</button>
+      <button class="dur-btn active" data-min="30">30м</button>
+      <button class="dur-btn" data-min="45">45м</button>
+      <button class="dur-btn" data-min="60">1ч</button>
+      <button class="dur-btn" data-min="90">1.5ч</button>
+    </div>
+
+    <button id="gen-btn" disabled>ГЕНЕРИРОВАТЬ МАРШРУТ</button>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    // ── STATE ──
+    let userLat = null, userLon = null;
+    let selectedDuration = 30;
+    let routeLayer = null;
+    let waypointMarkers = [];
+    let userMarker = null;
+    let watchId = null;
+
+    // ── MAP INIT ──
+    const map = L.map('map', {
+      zoomControl: true,
+      attributionControl: false,
+      tap: false,
+    }).setView([55.75, 37.62], 14);
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19,
+      subdomains: 'abcd',
+    }).addTo(map);
+
+    // ── CUSTOM ICONS ──
+    const userIcon = L.divIcon({ className: '', html: '<div class="user-dot"></div>', iconSize: [16, 16], iconAnchor: [8, 8] });
+    const wpIcon   = L.divIcon({ className: '', html: '<div class="wp-dot"></div>',   iconSize: [10, 10], iconAnchor: [5, 5] });
+
+    // ── UI REFS ──
+    const statusEl   = document.getElementById('status');
+    const coordsEl   = document.getElementById('coords-display');
+    const genBtn     = document.getElementById('gen-btn');
+    const locateBtn  = document.getElementById('locate-btn');
+    const routeInfo  = document.getElementById('route-info');
+    const infoDist   = document.getElementById('info-dist');
+    const infoTime   = document.getElementById('info-time');
+    const infoPts    = document.getElementById('info-pts');
+
+    // ── HELPERS ──
+    function setStatus(msg, type = '') {
+      statusEl.textContent = '// ' + msg;
+      statusEl.className = type;
+    }
+
+    function updateCoordsDisplay(lat, lon) {
+      coordsEl.innerHTML =
+        `LAT ${lat.toFixed(5)}<br>LON ${lon.toFixed(5)}`;
+    }
+
+    function clearRoute() {
+      if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+      waypointMarkers.forEach(m => map.removeLayer(m));
+      waypointMarkers = [];
+      routeInfo.classList.remove('visible');
+    }
+
+    // ── DURATION BUTTONS ──
+    document.querySelectorAll('.dur-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.dur-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        selectedDuration = parseInt(btn.dataset.min);
+      });
+    });
+
+    // ── GEOLOCATION ──
+    function onPosition(pos) {
+      userLat = pos.coords.latitude;
+      userLon = pos.coords.longitude;
+
+      updateCoordsDisplay(userLat, userLon);
+
+      if (!userMarker) {
+        userMarker = L.marker([userLat, userLon], { icon: userIcon, zIndexOffset: 1000 }).addTo(map);
+        map.setView([userLat, userLon], 15);
+        setStatus('ПОЗИЦИЯ НАЙДЕНА — ГОТОВ К РАБОТЕ', 'ok');
+        genBtn.disabled = false;
+      } else {
+        userMarker.setLatLng([userLat, userLon]);
+      }
+    }
+
+    function onPositionError(err) {
+      const msgs = {
+        1: 'ДОСТУП К GPS ЗАПРЕЩЁН — разрешите геолокацию',
+        2: 'GPS НЕДОСТУПЕН — проверьте соединение',
+        3: 'ТАЙМАУТ — повторная попытка...',
+      };
+      setStatus(msgs[err.code] || 'ОШИБКА GPS', 'error');
+    }
+
+    function startTracking() {
+      if (!navigator.geolocation) {
+        setStatus('ГЕОЛОКАЦИЯ НЕ ПОДДЕРЖИВАЕТСЯ', 'error');
+        return;
+      }
+      setStatus('ПОИСК СИГНАЛА GPS...');
+      watchId = navigator.geolocation.watchPosition(onPosition, onPositionError, {
+        enableHighAccuracy: true,
+        maximumAge: 10000,
+        timeout: 15000,
+      });
+    }
+
+    locateBtn.addEventListener('click', () => {
+      if (userLat) {
+        map.setView([userLat, userLon], 15);
+      } else {
+        startTracking();
+      }
+    });
+
+    // ── ROUTE DRAWING with animation ──
+    function animateRoute(geojson) {
+      const coords = geojson.coordinates.map(([lon, lat]) => [lat, lon]);
+      const total = coords.length;
+      let drawn = 0;
+
+      const line = L.polyline([], {
+        color: '#39ff14',
+        weight: 3,
+        opacity: 0.9,
+      }).addTo(map);
+      routeLayer = line;
+
+      const step = Math.max(1, Math.floor(total / 120));
+
+      function tick() {
+        drawn = Math.min(drawn + step, total);
+        line.setLatLngs(coords.slice(0, drawn));
+        if (drawn < total) requestAnimationFrame(tick);
+      }
+
+      requestAnimationFrame(tick);
+
+      // fit map
+      const bounds = L.latLngBounds(coords);
+      map.fitBounds(bounds, { padding: [60, 60] });
+    }
+
+    // ── GENERATE ROUTE ──
+    genBtn.addEventListener('click', async () => {
+      if (!userLat) { setStatus('GPS не активен — нажмите ⊕', 'error'); return; }
+
+      clearRoute();
+      genBtn.disabled = true;
+      genBtn.innerHTML = '<span class="spinner"></span>РАСЧЁТ...';
+      setStatus('ЗАПРОС К СЕРВЕРУ МАРШРУТОВ...');
+
+      try {
+        const res = await fetch('/generate-route', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat: userLat, lon: userLon, duration_minutes: selectedDuration }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.detail || 'Ошибка сервера');
+        }
+
+        const data = await res.json();
+
+        // draw route
+        animateRoute(data.geometry);
+
+        // draw waypoints
+        data.waypoints.forEach((wp, i) => {
+          const m = L.marker([wp.lat, wp.lon], { icon: wpIcon })
+            .bindTooltip(`WP-${String(i + 1).padStart(2, '0')}`, {
+              permanent: false,
+              className: 'wp-tooltip',
+              direction: 'top',
+            })
+            .addTo(map);
+          waypointMarkers.push(m);
+        });
+
+        // show stats
+        infoDist.textContent = data.distance_km;
+        infoTime.textContent = data.duration_min;
+        infoPts.textContent  = data.waypoints.length;
+        routeInfo.classList.add('visible');
+
+        setStatus(`МАРШРУТ ПОСТРОЕН — ${data.distance_km} КМ`, 'ok');
+
+      } catch (e) {
+        setStatus(e.message, 'error');
+      } finally {
+        genBtn.disabled = false;
+        genBtn.textContent = 'НОВЫЙ МАРШРУТ';
+      }
+    });
+
+    // ── BOOT ──
+    setTimeout(() => {
+      setStatus('ОЖИДАНИЕ СИГНАЛА GPS...');
+      startTracking();
+    }, 600);
+  </script>
+</body>
+</html>
