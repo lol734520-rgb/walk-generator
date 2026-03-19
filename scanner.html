@@ -371,6 +371,31 @@
   }
   .gallery-btn svg { width: 24px; height: 24px; fill: white; }
 
+  .auto-btn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 8px 12px;
+    background: rgba(57,255,20,0.12);
+    border: 1.5px solid rgba(57,255,20,0.4);
+    border-radius: 10px;
+    color: #39ff14;
+    font-family: 'Syne', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+  .auto-btn svg { width: 16px; height: 16px; fill: #39ff14; }
+  .auto-btn:active { transform: scale(0.95); }
+  .auto-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .auto-btn.loading { animation: pulse-border 1s ease-in-out infinite; }
+  @keyframes pulse-border {
+    0%,100% { border-color: rgba(57,255,20,0.3); }
+    50%      { border-color: rgba(57,255,20,0.9); }
+  }
+
   /* ─── CROP ─── */
   #screen-crop {
     background: #0d0d1a;
@@ -732,6 +757,10 @@
         <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
       </button>
       <div class="crop-title">Выделите документ</div>
+      <button class="auto-btn" id="btn-auto-detect" title="Авто-определение">
+        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
+        <span id="auto-btn-label">Авто</span>
+      </button>
     </div>
     <div class="crop-area" id="crop-area">
       <canvas id="crop-canvas"></canvas>
@@ -799,6 +828,7 @@
 <canvas id="warp-canvas" style="display:none"></canvas>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady()"></script>
 <script>
 'use strict';
 
@@ -1002,6 +1032,14 @@ function setupCropScreen() {
     { x: dw * (1-pad),   y: dh * (1-pad) },   // BR
     { x: dw * pad,       y: dh * (1-pad) },   // BL
   ];
+
+  // Try auto-detect, fall back to default corners
+  if (cvReady) {
+    const found = autoDetectCorners();
+    if (!found) showToast('Края не найдены — поправьте вручную');
+  } else {
+    showToast('Авто-определение загружается...');
+  }
 
   updateCropHandles();
 
@@ -1339,6 +1377,112 @@ window.addEventListener('resize', () => {
   if (AppState.screen === 'crop' && AppState.capturedImage) {
     setupCropScreen();
   }
+});
+
+// ─── OPENCV AUTO-DETECT ───
+let cvReady = false;
+
+window.onOpenCvReady = () => {
+  cvReady = true;
+  const btn = $('btn-auto-detect');
+  btn.classList.remove('loading');
+  btn.disabled = false;
+  $('auto-btn-label').textContent = 'Авто';
+};
+
+// Show loading state until OpenCV is ready
+(function initAutoBtn() {
+  const btn = $('btn-auto-detect');
+  btn.disabled = true;
+  btn.classList.add('loading');
+  $('auto-btn-label').textContent = '...';
+})();
+
+function orderCorners(pts) {
+  // Sort by sum (x+y): min = TL, max = BR
+  const bySum = [...pts].sort((a, b) => (a.x + a.y) - (b.x + b.y));
+  const tl = bySum[0];
+  const br = bySum[3];
+  // Of remaining two: smaller diff (x-y) = BL, larger = TR
+  const mid = [bySum[1], bySum[2]].sort((a, b) => (a.x - a.y) - (b.x - b.y));
+  return [tl, mid[1], br, mid[0]]; // TL, TR, BR, BL
+}
+
+function autoDetectCorners() {
+  if (!cvReady || !AppState.capturedImage || !cropCanvasRect) return false;
+
+  const r = cropCanvasRect;
+
+  // Work on a 600px-wide copy for speed
+  const workW = 600;
+  const workScale = workW / r.width;
+  const workH = Math.round(r.height * workScale);
+
+  const tmpCanvas = document.createElement('canvas');
+  tmpCanvas.width = workW;
+  tmpCanvas.height = workH;
+  tmpCanvas.getContext('2d').drawImage($('crop-canvas'), 0, 0, workW, workH);
+
+  let src, gray, blurred, edges, kernel, dilated, contours, hierarchy;
+  try {
+    src      = cv.imread(tmpCanvas);
+    gray     = new cv.Mat();
+    blurred  = new cv.Mat();
+    edges    = new cv.Mat();
+    kernel   = cv.Mat.ones(3, 3, cv.CV_8U);
+    dilated  = new cv.Mat();
+    contours = new cv.MatVector();
+    hierarchy = new cv.Mat();
+
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+    cv.Canny(blurred, edges, 75, 200);
+    cv.dilate(edges, dilated, kernel);
+    cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    // Find largest contour by area
+    let maxArea = 0, maxIdx = -1;
+    for (let i = 0; i < contours.size(); i++) {
+      const area = cv.contourArea(contours.get(i));
+      if (area > maxArea) { maxArea = area; maxIdx = i; }
+    }
+
+    if (maxIdx < 0 || maxArea < workW * workH * 0.05) return false;
+
+    const contour = contours.get(maxIdx);
+    const approx = new cv.Mat();
+    const peri = cv.arcLength(contour, true);
+    cv.approxPolyDP(contour, approx, 0.02 * peri, true);
+
+    let found = false;
+    if (approx.rows === 4) {
+      const pts = [];
+      for (let i = 0; i < 4; i++) {
+        pts.push({
+          x: approx.data32S[i * 2]     / workScale,
+          y: approx.data32S[i * 2 + 1] / workScale,
+        });
+      }
+      AppState.corners = orderCorners(pts);
+      updateCropHandles();
+      found = true;
+    }
+
+    approx.delete();
+    return found;
+  } catch (e) {
+    console.warn('AutoDetect error:', e);
+    return false;
+  } finally {
+    [src, gray, blurred, edges, kernel, dilated, contours, hierarchy]
+      .forEach(m => m && m.delete && m.delete());
+  }
+}
+
+$('btn-auto-detect').addEventListener('click', () => {
+  if (!cvReady) { showToast('OpenCV ещё загружается...'); return; }
+  const found = autoDetectCorners();
+  showToast(found ? '✓ Края найдены автоматически' : 'Не удалось найти края — поправьте вручную');
 });
 
 // ─── INIT ───
