@@ -781,9 +781,10 @@
           <span id="auto-btn-label">Авто</span>
         </button>
         <button class="filter-btn active" data-filter="color">Цвет</button>
-        <button class="filter-btn" data-filter="grayscale">Ч/Б</button>
+        <button class="filter-btn" data-filter="grayscale">Серый</button>
         <button class="filter-btn" data-filter="bw">Б&amp;Ч</button>
-        <button class="filter-btn" data-filter="enhanced">Чёткий</button>
+        <button class="filter-btn" data-filter="enhanced">Резкий</button>
+        <button class="filter-btn" data-filter="text">📄 Текст</button>
       </div>
       <button class="apply-btn" id="btn-apply">Применить ✓</button>
     </div>
@@ -1296,31 +1297,91 @@ async function applyWarp() {
   return dstCanvas.toDataURL('image/jpeg', 0.92);
 }
 
+// ─── FILTER HELPERS ───
+
+function toGray(d, w, h) {
+  const g = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++)
+    g[i] = 0.2126 * d[i*4] + 0.7152 * d[i*4+1] + 0.0722 * d[i*4+2];
+  return g;
+}
+
+// Fast box blur via integral image
+function boxBlur(gray, w, h, radius) {
+  const integral = new Float64Array((w+1) * (h+1));
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++)
+      integral[(y+1)*(w+1)+(x+1)] = gray[y*w+x]
+        + integral[y*(w+1)+(x+1)]
+        + integral[(y+1)*(w+1)+x]
+        - integral[y*(w+1)+x];
+
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const x1 = Math.max(0, x - radius), y1 = Math.max(0, y - radius);
+      const x2 = Math.min(w-1, x + radius), y2 = Math.min(h-1, y + radius);
+      const cnt = (x2-x1+1) * (y2-y1+1);
+      const sum = integral[(y2+1)*(w+1)+(x2+1)] - integral[y1*(w+1)+(x2+1)]
+                - integral[(y2+1)*(w+1)+x1]     + integral[y1*(w+1)+x1];
+      out[y*w+x] = sum / cnt;
+    }
+  }
+  return out;
+}
+
 function applyFilter(ctx, w, h, filter) {
   if (filter === 'color') return;
 
   const imgd = ctx.getImageData(0, 0, w, h);
   const d = imgd.data;
 
-  for (let i = 0; i < d.length; i += 4) {
-    let r = d[i], g = d[i+1], b = d[i+2];
+  if (filter === 'grayscale') {
+    for (let i = 0; i < w * h; i++) {
+      const v = Math.round(0.2126*d[i*4] + 0.7152*d[i*4+1] + 0.0722*d[i*4+2]);
+      d[i*4] = d[i*4+1] = d[i*4+2] = v;
+    }
 
-    if (filter === 'grayscale' || filter === 'bw' || filter === 'enhanced') {
-      // Luminance
-      let lum = 0.2126*r + 0.7152*g + 0.0722*b;
+  } else if (filter === 'bw') {
+    // Grayscale + Otsu global threshold
+    const gray = toGray(d, w, h);
+    const hist = new Float32Array(256);
+    for (let i = 0; i < gray.length; i++) hist[Math.round(gray[i])]++;
+    const total = gray.length;
+    let sum = 0;
+    for (let i = 0; i < 256; i++) sum += i * hist[i];
+    let sumB = 0, wB = 0, best = 0, thresh = 128;
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t]; if (!wB) continue;
+      const wF = total - wB; if (!wF) break;
+      sumB += t * hist[t];
+      const mB = sumB / wB, mF = (sum - sumB) / wF;
+      const between = wB * wF * (mB - mF) ** 2;
+      if (between > best) { best = between; thresh = t; }
+    }
+    for (let i = 0; i < w * h; i++) {
+      const v = gray[i] > thresh ? 255 : 0;
+      d[i*4] = d[i*4+1] = d[i*4+2] = v;
+    }
 
-      if (filter === 'enhanced') {
-        // Boost contrast
-        lum = Math.max(0, Math.min(255, (lum - 128) * 1.6 + 128));
-        // Also sharpen brightness
-        lum = lum < 80 ? lum * 0.75 : lum > 180 ? Math.min(255, lum * 1.15) : lum;
-      }
+  } else if (filter === 'enhanced') {
+    // Unsharp masking: result = original + amount*(original - blurred)
+    const gray = toGray(d, w, h);
+    const blurred = boxBlur(gray, w, h, 2);
+    for (let i = 0; i < w * h; i++) {
+      const sharp = Math.max(0, Math.min(255, gray[i] + 1.8 * (gray[i] - blurred[i])));
+      d[i*4] = d[i*4+1] = d[i*4+2] = Math.round(sharp);
+    }
 
-      if (filter === 'bw') {
-        lum = lum > 140 ? 255 : 0;
-      }
-
-      d[i] = d[i+1] = d[i+2] = lum;
+  } else if (filter === 'text') {
+    // Adaptive threshold — лучший режим для текста
+    // Порог = локальное среднее в окне 21px − константа
+    const gray = toGray(d, w, h);
+    const localMean = boxBlur(gray, w, h, 10); // radius 10 = 21x21 window
+    const C = 8; // вычитаем из среднего
+    for (let i = 0; i < w * h; i++) {
+      const v = gray[i] > localMean[i] - C ? 255 : 0;
+      d[i*4] = d[i*4+1] = d[i*4+2] = v;
     }
   }
 
