@@ -923,7 +923,7 @@ async function startCamera() {
   showScreen('camera');
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }
+      video: { facingMode: 'environment', width: { ideal: 4096 }, height: { ideal: 2160 } }
     });
     AppState.stream = stream;
     AppState.cameraMode = 'video';
@@ -959,10 +959,10 @@ $('btn-capture').addEventListener('click', () => {
   }
   const video = $('video');
   const tmpCanvas = document.createElement('canvas');
-  tmpCanvas.width = video.videoWidth || 1280;
-  tmpCanvas.height = video.videoHeight || 720;
+  tmpCanvas.width = video.videoWidth || 1920;
+  tmpCanvas.height = video.videoHeight || 1080;
   tmpCanvas.getContext('2d').drawImage(video, 0, 0);
-  const dataUrl = tmpCanvas.toDataURL('image/jpeg', 0.92);
+  const dataUrl = tmpCanvas.toDataURL('image/jpeg', 1.0);
   loadImageForCrop(dataUrl);
 });
 
@@ -1229,9 +1229,8 @@ function bilinearSample(data, width, height, x, y) {
 async function applyWarp() {
   const img = AppState.capturedImage;
 
-  // Resize source for performance (max 1500px wide)
-  const maxSrc = 1500;
-  const srcScale = Math.min(1, maxSrc / img.naturalWidth);
+  // No downscale — process at full resolution
+  const srcScale = 1.0;
   const srcW = Math.round(img.naturalWidth * srcScale);
   const srcH = Math.round(img.naturalHeight * srcScale);
 
@@ -1249,9 +1248,9 @@ async function applyWarp() {
     y: c.y * r.scaleY * srcScale,
   }));
 
-  // Output A4 proportions
-  const dstW = 794;
-  const dstH = 1123;
+  // Output A4 at 200dpi (Full HD quality)
+  const dstW = 1654;
+  const dstH = 2339;
 
   const dstCorners = [
     { x: 0,    y: 0    }, // TL
@@ -1270,8 +1269,8 @@ async function applyWarp() {
   const dstImageData = dstCtx.createImageData(dstW, dstH);
   const dstData = dstImageData.data;
 
-  // Process in chunks to keep UI responsive
-  const chunkSize = 80;
+  // Process in chunks — yield every 60 rows to keep UI responsive + show progress
+  const chunkSize = 60;
   for (let y0 = 0; y0 < dstH; y0 += chunkSize) {
     const y1 = Math.min(y0 + chunkSize, dstH);
     for (let y = y0; y < y1; y++) {
@@ -1285,7 +1284,8 @@ async function applyWarp() {
         dstData[off+3] = a;
       }
     }
-    // Yield to browser
+    const pct = Math.round((y1 / dstH) * 100);
+    $('spinner-label').textContent = `Обработка... ${pct}%`;
     await new Promise(r => setTimeout(r, 0));
   }
 
@@ -1294,7 +1294,7 @@ async function applyWarp() {
   // Apply filter
   applyFilter(dstCtx, dstW, dstH, AppState.filter);
 
-  return dstCanvas.toDataURL('image/jpeg', 0.92);
+  return dstCanvas.toDataURL('image/jpeg', 0.97);
 }
 
 // ─── FILTER HELPERS ───
