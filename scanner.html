@@ -829,6 +829,20 @@
 <canvas id="warp-canvas" style="display:none"></canvas>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script>
+  // Must be defined BEFORE opencv.js loads (async race condition fix)
+  window.onOpenCvReady = function() {
+    function markReady() {
+      window._cvReady = true;
+      if (window._onCvReadyCallback) window._onCvReadyCallback();
+    }
+    if (typeof cv !== 'undefined' && cv.Mat) {
+      markReady();
+    } else {
+      cv['onRuntimeInitialized'] = markReady;
+    }
+  };
+</script>
 <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady()"></script>
 <script>
 'use strict';
@@ -1457,21 +1471,26 @@ window.addEventListener('resize', () => {
 // ─── OPENCV AUTO-DETECT ───
 let cvReady = false;
 
-window.onOpenCvReady = () => {
+function onCvActuallyReady() {
   cvReady = true;
   const btn = $('btn-auto-detect');
   btn.classList.remove('loading');
   btn.disabled = false;
   $('auto-btn-label').textContent = 'Авто';
-};
+}
 
-// Show loading state until OpenCV is ready
-(function initAutoBtn() {
+// Hook into the pre-defined global bridge
+if (window._cvReady) {
+  // OpenCV already loaded before this script ran
+  onCvActuallyReady();
+} else {
+  window._onCvReadyCallback = onCvActuallyReady;
+  // Show loading state
   const btn = $('btn-auto-detect');
   btn.disabled = true;
   btn.classList.add('loading');
   $('auto-btn-label').textContent = '...';
-})();
+}
 
 function orderCorners(pts) {
   // Sort by sum (x+y): min = TL, max = BR
