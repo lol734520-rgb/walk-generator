@@ -1291,9 +1291,23 @@ async function applyWarp() {
 
   dstCtx.putImageData(dstImageData, 0, 0);
 
-  // Apply filter
-  applyFilter(dstCtx, dstW, dstH, AppState.filter);
+  // For heavy filters (text/bw) — downsample first to avoid mobile crash
+  const filter = AppState.filter;
+  if (filter === 'text' || filter === 'bw') {
+    const maxW = 1240;
+    const scale = Math.min(1, maxW / dstW);
+    const smallW = Math.round(dstW * scale);
+    const smallH = Math.round(dstH * scale);
+    const smallCanvas = document.createElement('canvas');
+    smallCanvas.width = smallW;
+    smallCanvas.height = smallH;
+    const smallCtx = smallCanvas.getContext('2d');
+    smallCtx.drawImage(dstCanvas, 0, 0, smallW, smallH);
+    applyFilter(smallCtx, smallW, smallH, filter);
+    return smallCanvas.toDataURL('image/jpeg', 0.97);
+  }
 
+  applyFilter(dstCtx, dstW, dstH, filter);
   return dstCanvas.toDataURL('image/jpeg', 0.97);
 }
 
